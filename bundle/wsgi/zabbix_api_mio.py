@@ -3,9 +3,9 @@ import requests
 
 class APIConnector():
     def __init__(self):
-	self.user = 'azanni'
-	self.pwd = 'azanni'
-        self.url = 'http://137.204.57.236:8008/zabbix/api_jsonrpc.php'
+	self.user = 'admin'
+	self.pwd = 'zabbix'
+        self.url = 'http://160.85.4.28/zabbix/api_jsonrpc.php'
         self.token = None
         self.hosts = None
 
@@ -31,18 +31,19 @@ class APIConnector():
             "jsonrpc": "2.0",
             "method": "host.get",
             "id": 1,
+            "filter": {
+                "host": "influxdb"
+            },
             "params": {
                 "sortfield": "name",
                 "output": ["hostid", "name"]
             },
-            "auth": self.token,
-            "filter": {
-                "host": "influxdb-vm"
-            }
+            "auth": self.token
         }
         data = json.dumps(data)
         response = requests.post(self.url, data, headers=headers).json()
         self.hosts = response["result"]
+        print response["result"]
         return response["result"]
 
     def get_zbx_items(self, search_string, host_ids):

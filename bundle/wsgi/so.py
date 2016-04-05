@@ -27,17 +27,24 @@ from zabbix_api import ZabbixAPI
 from zabbix_api_mio import APIConnector
 from py4j.java_gateway import JavaGateway
 from py4j.java_collections import SetConverter, MapConverter, ListConverter
+import paramiko
 
 from sdk.mcn import util
 from sm.so import service_orchestrator
 from sm.so.service_orchestrator import LOG
 from sm.so.service_orchestrator import BUNDLE_DIR
 
+import traceback
+
 DEFAULT_REGION = 'RegionOne'
 #zabbix_url='http://137.204.57.236:8008/zabbix/'
 #zabbix_user='azanni'
 #zabbix_pass='azanni'
 
+#MAAS_DEFAULT_IP = '160.85.4.28'
+#ZABBIX_URL='http://' + MAAS_DEFAULT_IP + '/zabbix/'
+#ZABBIX_USER='admin'
+#ZABBIX_PASS='zabbix'
 zabbix_url='http://160.85.4.28/zabbix/'
 zabbix_user='admin'
 zabbix_pass='zabbix'
@@ -65,6 +72,7 @@ class SOE(service_orchestrator.Execution):
         self.token = token
         self.tenant = tenant
         self.event = ready_event
+        self.influxdb_ip = None
         self.updated = False
         self.endpoint = None
         self.maas_endpoint = None
@@ -72,6 +80,7 @@ class SOE(service_orchestrator.Execution):
         self.layers = {}
         self.routers = {}
         self.stack_id = None
+        self.stack_id_old = None
         self.deployer = util.get_deployer(self.token,
                                           url_type='public',
                                           tenant_name=self.tenant,
@@ -109,11 +118,11 @@ class SOE(service_orchestrator.Execution):
         LOG.debug('Executing resource provisioning logic')
         # XXX note that provisioning of external services must happen before resource provisioning
         # Get endpoint of MaaS
-        if attributes:
+#        if attributes:
             #print attributes
-            if 'mcn.endpoint.maas' in attributes:
-                self.sm_parameters['maas_ip_address'] = attributes['mcn.endpoint.maas']
-                LOG.debug('Provision mcn.endpoint.maas in attributes'+ str(attributes['mcn.endpoint.maas']))
+#            if 'mcn.endpoint.maas' in attributes:
+#                self.sm_parameters['maas_ip_address'] = attributes['mcn.endpoint.maas']
+#                LOG.debug('Provision mcn.endpoint.maas in attributes'+ str(attributes['mcn.endpoint.maas']))
 
         # Update stack
         self.update(True)
@@ -139,7 +148,31 @@ class SOE(service_orchestrator.Execution):
         """
         # TODO ideally here you compose what attributes should be returned to the SM
         # In this case only the state attributes are returned.
-        resolver_state = self.resolver.state()
+        # resolver_state = self.resolver.state()
+        if self.stack_id is not None:
+            LOG.info('stack id state: ' + str(self.stack_id))
+            try:
+                tmp = self.deployer.details(self.stack_id, self.token)
+                LOG.info('###### : ' + str(tmp.get('output')))
+                if tmp.get('output', None) is not None:
+                    for output in tmp['output']:
+                        if output['output_key'].startswith('mcn.endpoint.influxdb'):
+                            influxdb_url = output['output_value']
+                            self.influxdb_ip = influxdb_url.split(':')[1][2:]
+                            print "influxdb_ip: ", self.influxdb_ip
+                            LOG.debug('influxdb_ip: '+self.influxdb_ip)
+                            break
+                    LOG.debug('State: ' + tmp['state'] + ' len output =' + str(len(tmp['output'])))
+                    return tmp['state'], self.stack_id, tmp['output']
+                else:
+                    return tmp['state'], self.stack_id, []
+                    #return 'Unknown', 'N/A'
+            except:
+                LOG.debug(traceback.print_exc())
+                LOG.debug('Error/Exception getting stack!')
+                return 'Error', self.stack_id, []
+        else:
+            return 'Unknown', 'N/A', []
 
     def update(self, provisioning = False, attributes = None):
         """
@@ -221,8 +254,9 @@ class SOD(service_orchestrator.Decision, threading.Thread):
             while self.so_e.stack_id is not None:
                 # Check if update is complete
                 while True:
-                    tmp = self.so_e.deployer.details(self.so_e.stack_id, self.so_e.token)
-                    if tmp['state'] == 'UPDATE_COMPLETE':
+                    #tmp = self.so_e.deployer.details(self.so_e.stack_id, self.so_e.token)
+                    tmp = self.so_e.state()
+                    if tmp[0] == 'UPDATE_COMPLETE':
                         break
                     else:
                         time.sleep(10)
@@ -269,14 +303,52 @@ class SOD(service_orchestrator.Decision, threading.Thread):
                     Tmovetot_start=time.time()
 
                     #MIGRATION
-                    self.so_e.update()
-                    self.so_e.provision()
+                    # Deploy template
+                    #if self.stack_id is None:
+                    #    self.stack_id = self.deployer.deploy(self.graph, self.token, name='rcb_' + str(random.randint(1000, 9999)))
+                    self.so_e.stack_id_old = self.so_e.stack_id
+                    self.so_e.influxdb_ip_old = self.so_e.influxdb_ip
+                    print "before - self.so_e.stack_id: ", self.so_e.stack_id
+        #            self.so_e.stack_id=None
+        #            self.so_e.deploy(None)
+        #            self.so_e.provision()
+                    print "after - self.so_e.stack_id: ", self.so_e.stack_id
+        #            while True:
+        #                tmp = self.so_e.state()
+        #                if tmp[0] == 'UPDATE_COMPLETE':
+        #                    break
+        #                else:
+        #                    time.sleep(10)
 
+                    #move data -> 
+                    print "I'm moving data from old influxVM to new influxVM",  self.so_e.influxdb_ip_old, self.so_e.influxdb_ip
+                    if not self.so_e.influxdb_ip_old or not self.so_e.influxdb_ip:
+                        print "Cannot move data. Missing IP"
+                        print "old VM ip: ", self.so_e.influxdb_ip_old
+                        print "new VM ip: ", self.so_e.influxdb_ip
+                    else:
+                        print "I'm moving data..."
+                        #ssh = paramiko.SSHClient()
+                        #ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                        #ssh.connect(self.so_e.influxdb_ip, username='ubuntu', key_filename=BUNDLE_DIR+'/key/mcn-key.pem')
+                        #command = 'bash /home/ubuntu/greyModel_noCluster/database_config.sh ' + self.so_e.influxdb_ip_old
+                        #stdin, stdout, stderr = ssh.exec_command(command)
+                        #print "Script output", stdout.readlines()
+                        #ssh.close()
+                        print "Data moved"
                     Tmovetot=time.time()-Tmovetot_start
                     print "Total time to migrate the VMs: ", Tmovetot, "s"
+
+         #           stack_current = self.so_e.stack_id
+         #           self.so_e.stack_id = self.so_e.stack_id_old
+         #           self.so_e.dispose()
+         #           self.so_e.stack_id = stack_current
+
                 except:
                     print "Cannot move VM. Unexpected error:", sys.exc_info()[0]
                     raise
+        print "Now I sleep..."
+        time.sleep(10)
 
 class ServiceOrchestrator(object):
     """
