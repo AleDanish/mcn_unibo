@@ -35,6 +35,8 @@ from sm.so.service_orchestrator import LOG
 from sm.so.service_orchestrator import BUNDLE_DIR
 
 import traceback
+from monitorRCB import *
+
 
 DEFAULT_REGION = 'RegionOne'
 #zabbix_url='http://137.204.57.236:8008/zabbix/'
@@ -103,6 +105,11 @@ class SOE(service_orchestrator.Execution):
         # Get template
         templ_file = open(os.path.join(BUNDLE_DIR, 'data', 'influxdb-cyclops.yaml'), 'r')
         self.graph = templ_file.read()
+
+        # Region Name:
+        #to retrieve the region name: region_name = entity.attributes['region_name']
+        # then if on the template 
+
         # Deploy template
         if self.stack_id is None:
             self.stack_id = self.deployer.deploy(self.graph, self.token, \
@@ -216,9 +223,11 @@ class SOD(service_orchestrator.Decision, threading.Thread):
         self.event = ready_event
         self.hosts_cpu_load = []
         self.hosts_cpu_util = []
-        #self.hosts_mem = []
+        self.hosts_mem_total = []
+        self.hosts_mem_aval =[]
         self.connector = APIConnector()
         self.auth = self.connector.auth_zabbix()
+        self.monitor = RCBaaSMonitor("160.85.4.28")
         gateway = JavaGateway()
 
     def run(self):
@@ -241,7 +250,8 @@ class SOD(service_orchestrator.Decision, threading.Thread):
         # for host in host_ids:
         self.hosts_cpu_load.append(MyList())
         self.hosts_cpu_util.append(MyList())
-        #hosts_mem.append(MyList())
+        self.hosts_mem_total.append(MyList())
+        self.hosts_mem_aval.append(MyList())
 
         Tconfig=time.time()-Tstart
         print "Config time: ", Tconfig, "s"
@@ -270,16 +280,24 @@ class SOD(service_orchestrator.Decision, threading.Thread):
 
     def monitoring(self):
         Tzbx_start=time.time()
-        cpu_loads = self.connector.get_cpu_load()
-        cpu_util = self.connector.get_cpu_util()
+        metrics = self.monitor.get("influxdb")
+        print "metrics", metrics
+        cpu_loads = metrics[1]#self.connector.get_cpu_load()
+        cpu_util = metrics[0]#self.connector.get_cpu_util()
+        mem_total = metrics[2]
+        mem_available= metrics [3]
         #mem = connector.get_mem_load()
         #for i in range(len(host_ids)):
-        self.hosts_cpu_load[0].append(cpu_loads[0])
-        self.hosts_cpu_util[0].append(cpu_util[0])
+        self.hosts_cpu_load[0].append(cpu_loads)
+        self.hosts_cpu_util[0].append(100-cpu_util)
+        self.hosts_mem_total[0].append(mem_total)
+        self.hosts_mem_aval[0].append(mem_available)
         #hosts_mem[i].append(mem[i])
+        #hosts_aval[i].append(mem[i])
         print "zbx - cpu_load: ", self.hosts_cpu_load
         print "zbx - cpu_util: ", self.hosts_cpu_util
-        #print "zbx - mem: ", hosts_mem
+        print "zbx - mem: ", self.hosts_mem_total
+        print "zbx - aval: ", self.hosts_mem_aval
 
         Tzbx=time.time()-Tzbx_start
         print "Zbx time to read: ", Tzbx, "s"
@@ -304,21 +322,23 @@ class SOD(service_orchestrator.Decision, threading.Thread):
 
                     #MIGRATION
                     # Deploy template
-                    #if self.stack_id is None:
-                    #    self.stack_id = self.deployer.deploy(self.graph, self.token, name='rcb_' + str(random.randint(1000, 9999)))
+                    if self.stack_id is None:
+                        self.stack_id = self.deployer.deploy(self.graph, self.token, name='rcb_' + str(random.randint(1000, 9999)))
                     self.so_e.stack_id_old = self.so_e.stack_id
                     self.so_e.influxdb_ip_old = self.so_e.influxdb_ip
                     print "before - self.so_e.stack_id: ", self.so_e.stack_id
-        #            self.so_e.stack_id=None
-        #            self.so_e.deploy(None)
-        #            self.so_e.provision()
+        
+                    self.so_e.stack_id=None
+                    attributes['region_name'] = "RegionOne"
+                    self.so_e.deploy(attributes)
+                    self.so_e.provision()
                     print "after - self.so_e.stack_id: ", self.so_e.stack_id
-        #            while True:
-        #                tmp = self.so_e.state()
-        #                if tmp[0] == 'UPDATE_COMPLETE':
-        #                    break
-        #                else:
-        #                    time.sleep(10)
+                    while True:
+                        tmp = self.so_e.state()
+                        if tmp[0] == 'UPDATE_COMPLETE':
+                            break
+                        else:
+                            time.sleep(10)
 
                     #move data -> 
                     print "I'm moving data from old influxVM to new influxVM",  self.so_e.influxdb_ip_old, self.so_e.influxdb_ip
