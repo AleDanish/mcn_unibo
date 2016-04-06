@@ -23,8 +23,8 @@ import requests
 import threading
 import time
 import sys
+import subprocess
 from zabbix_api import ZabbixAPI
-from zabbix_api_mio import APIConnector
 from py4j.java_gateway import JavaGateway
 from py4j.java_collections import SetConverter, MapConverter, ListConverter
 import paramiko
@@ -39,18 +39,14 @@ from monitorRCB import *
 
 
 DEFAULT_REGION = 'RegionOne'
-#zabbix_url='http://137.204.57.236:8008/zabbix/'
-#zabbix_user='azanni'
-#zabbix_pass='azanni'
-
-#MAAS_DEFAULT_IP = '160.85.4.28'
+MAAS_DEFAULT_IP = '160.85.4.28'
 #ZABBIX_URL='http://' + MAAS_DEFAULT_IP + '/zabbix/'
 #ZABBIX_USER='admin'
 #ZABBIX_PASS='zabbix'
-zabbix_url='http://160.85.4.28/zabbix/'
-zabbix_user='admin'
-zabbix_pass='zabbix'
-trigger_value=0.5
+TRIGGER_VALUE=0.1
+
+INFLUXDB_ZABBIX = 'influxdb'
+RCB_ZABBIX = 'rcbi-si'
 
 class MyList(list):
     def append(self, item):
@@ -76,11 +72,7 @@ class SOE(service_orchestrator.Execution):
         self.event = ready_event
         self.influxdb_ip = None
         self.updated = False
-        self.endpoint = None
         self.maas_endpoint = None
-        # Default topology
-        self.layers = {}
-        self.routers = {}
         self.stack_id = None
         self.stack_id_old = None
         self.deployer = util.get_deployer(self.token,
@@ -225,29 +217,17 @@ class SOD(service_orchestrator.Decision, threading.Thread):
         self.hosts_cpu_util = []
         self.hosts_mem_total = []
         self.hosts_mem_aval =[]
-        self.connector = APIConnector()
-        self.auth = self.connector.auth_zabbix()
-        self.monitor = RCBaaSMonitor("160.85.4.28")
-        gateway = JavaGateway()
+        #self.connector = APIConnector()
+        #self.auth = self.connector.auth_zabbix()
+        self.monitor = RCBaaSMonitor(MAAS_DEFAULT_IP)
+        return_code = subprocess.call("bash "+BUNDLE_DIR+"wsgi/greymodel.sh", shell=True)      
+        self.gateway = JavaGateway()
 
     def run(self):
         """
         Decision part implementation goes here.
         """
         Tstart=time.time()
-        #host_ids = connector.get_zbx_hostids()
-        try:
-            hostid = connector.host.get({"filter":{"host":"influxdb-vm"}})[0]["hostid"]
-        except:
-            print "WARNING: Hostname influxdb not found"
-        try:
-            item = "system.cpu.load[percpu,avg1]"
-            value = connector.item.get({"output":"extend","hostids":hostid,"filter":{"key_":item}})[0]["lastvalue"]
-            print value
-        except:
-            pass
-
-        # for host in host_ids:
         self.hosts_cpu_load.append(MyList())
         self.hosts_cpu_util.append(MyList())
         self.hosts_mem_total.append(MyList())
@@ -280,14 +260,12 @@ class SOD(service_orchestrator.Decision, threading.Thread):
 
     def monitoring(self):
         Tzbx_start=time.time()
-        metrics = self.monitor.get("influxdb")
-        print "metrics", metrics
-        cpu_loads = metrics[1]#self.connector.get_cpu_load()
-        cpu_util = metrics[0]#self.connector.get_cpu_util()
+        metrics = self.monitor.get(INFLUXDB_ZABBIX)
+        cpu_util = metrics[0]
+        cpu_loads = metrics[1]
         mem_total = metrics[2]
         mem_available= metrics [3]
-        #mem = connector.get_mem_load()
-        #for i in range(len(host_ids)):
+        
         self.hosts_cpu_load[0].append(cpu_loads)
         self.hosts_cpu_util[0].append(100-cpu_util)
         self.hosts_mem_total[0].append(mem_total)
@@ -305,32 +283,32 @@ class SOD(service_orchestrator.Decision, threading.Thread):
         if len(self.hosts_cpu_load[0]) > 0:
             Tgm_start=time.time()
 
-            cpu_load_GM = self.hosts_cpu_load#getGreyModelValues(self.gateway, hosts_cpu_load)
-            cpu_util_GM = self.hosts_cpu_util#getGreyModelValues(self.gateway, hosts_cpu_util)
-            #mem_GM = 5#getGreyModelValues(self.gateway, hosts_mem)
+            cpu_load_GM = getGreyModelValues(self.gateway, self.hosts_cpu_load)
+            cpu_util_GM = getGreyModelValues(self.gateway, self.hosts_cpu_util)
+            #mem_GM = getGreyModelValues(self.gateway, self.hosts_mem)
             print "next value GM - cpu_load: ", cpu_load_GM
             print "next value GM - cpu_util: ", cpu_util_GM
             #print "next value GM - mem: ", mem_GM
 
-            #avg=reduce(lambda x, y: x + y, cpu_load_GM)/len(cpu_load_GM)
-            avg=20
-            print avg
-            if avg > trigger_value:
+            avg=reduce(lambda x, y: x + y, cpu_load_GM)/len(cpu_load_GM)
+            print 'acg: ', avg
+            if avg > TRIGGER_VALUE:
                 print "Trigger activated. I'm going to move the VM state."
                 try:
                     Tmovetot_start=time.time()
 
                     #MIGRATION
                     # Deploy template
-                    if self.stack_id is None:
-                        self.stack_id = self.deployer.deploy(self.graph, self.token, name='rcb_' + str(random.randint(1000, 9999)))
+                    if self.so_e.stack_id is None:
+                        self.so_e.stack_id = self.deployer.deploy(self.graph, self.token, name='rcb_' + str(random.randint(1000, 9999)))
                     self.so_e.stack_id_old = self.so_e.stack_id
                     self.so_e.influxdb_ip_old = self.so_e.influxdb_ip
                     print "before - self.so_e.stack_id: ", self.so_e.stack_id
         
                     self.so_e.stack_id=None
-                    attributes['region_name'] = "RegionOne"
-                    self.so_e.deploy(attributes)
+                    #attributes = {'region_name': "RegionOne"}
+                    #self.so_e.deploy(attributes)
+                    self.so_e.deploy(None)
                     self.so_e.provision()
                     print "after - self.so_e.stack_id: ", self.so_e.stack_id
                     while True:
@@ -359,10 +337,10 @@ class SOD(service_orchestrator.Decision, threading.Thread):
                     Tmovetot=time.time()-Tmovetot_start
                     print "Total time to migrate the VMs: ", Tmovetot, "s"
 
-         #           stack_current = self.so_e.stack_id
-         #           self.so_e.stack_id = self.so_e.stack_id_old
-         #           self.so_e.dispose()
-         #           self.so_e.stack_id = stack_current
+                    stack_current = self.so_e.stack_id
+                    self.so_e.stack_id = self.so_e.stack_id_old
+                    self.so_e.dispose()
+                    self.so_e.stack_id = stack_current
 
                 except:
                     print "Cannot move VM. Unexpected error:", sys.exc_info()[0]
