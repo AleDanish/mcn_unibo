@@ -40,13 +40,9 @@ from monitorRCB import *
 
 DEFAULT_REGION = 'RegionOne'
 MAAS_DEFAULT_IP = '160.85.4.28'
-#ZABBIX_URL='http://' + MAAS_DEFAULT_IP + '/zabbix/'
-#ZABBIX_USER='admin'
-#ZABBIX_PASS='zabbix'
-TRIGGER_VALUE=0.1
-
 INFLUXDB_ZABBIX = 'influxdb'
 RCB_ZABBIX = 'rcbi-si'
+TRIGGER_VALUE = 0.1
 
 class MyList(list):
     def append(self, item):
@@ -217,8 +213,6 @@ class SOD(service_orchestrator.Decision, threading.Thread):
         self.hosts_cpu_util = []
         self.hosts_mem_total = []
         self.hosts_mem_aval =[]
-        #self.connector = APIConnector()
-        #self.auth = self.connector.auth_zabbix()
         self.monitor = RCBaaSMonitor(MAAS_DEFAULT_IP)
         return_code = subprocess.call("bash "+BUNDLE_DIR+"wsgi/greymodel.sh", shell=True)      
         self.gateway = JavaGateway()
@@ -270,8 +264,6 @@ class SOD(service_orchestrator.Decision, threading.Thread):
         self.hosts_cpu_util[0].append(100-cpu_util)
         self.hosts_mem_total[0].append(mem_total)
         self.hosts_mem_aval[0].append(mem_available)
-        #hosts_mem[i].append(mem[i])
-        #hosts_aval[i].append(mem[i])
         print "zbx - cpu_load: ", self.hosts_cpu_load
         print "zbx - cpu_util: ", self.hosts_cpu_util
         print "zbx - mem: ", self.hosts_mem_total
