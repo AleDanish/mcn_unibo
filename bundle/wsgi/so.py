@@ -36,13 +36,7 @@ from sm.so.service_orchestrator import BUNDLE_DIR
 
 import traceback
 from monitorRCB import *
-
-
-DEFAULT_REGION = 'RegionOne'
-MAAS_DEFAULT_IP = '160.85.4.28'
-INFLUXDB_ZABBIX = 'influxdb'
-RCB_ZABBIX = 'rcbi-si'
-TRIGGER_VALUE = 0.1
+import myparameters
 
 class MyList(list):
     def append(self, item):
@@ -74,7 +68,7 @@ class SOE(service_orchestrator.Execution):
         self.deployer = util.get_deployer(self.token,
                                           url_type='public',
                                           tenant_name=self.tenant,
-                                          region=DEFAULT_REGION)
+                                          region=myparameters.DEFAULT_REGION)
 
     def design(self):
         """
@@ -211,10 +205,9 @@ class SOD(service_orchestrator.Decision, threading.Thread):
         self.event = ready_event
         self.hosts_cpu_load = []
         self.hosts_cpu_util = []
-        self.hosts_mem_total = []
-        self.hosts_mem_aval =[]
-        self.monitor = RCBaaSMonitor(MAAS_DEFAULT_IP)
-        return_code = subprocess.call("bash "+BUNDLE_DIR+"wsgi/greymodel.sh", shell=True)      
+        self.hosts_memory = []
+        self.monitor = RCBaaSMonitor(myparameters.MAAS_DEFAULT_IP)
+        return_code = subprocess.call("bash " + BUNDLE_DIR + "wsgi/greymodel.sh", shell=True)      
         self.gateway = JavaGateway()
 
     def run(self):
@@ -224,8 +217,7 @@ class SOD(service_orchestrator.Decision, threading.Thread):
         Tstart=time.time()
         self.hosts_cpu_load.append(MyList())
         self.hosts_cpu_util.append(MyList())
-        self.hosts_mem_total.append(MyList())
-        self.hosts_mem_aval.append(MyList())
+        self.hosts_memory.append(MyList())
 
         Tconfig=time.time()-Tstart
         print "Config time: ", Tconfig, "s"
@@ -243,7 +235,7 @@ class SOD(service_orchestrator.Decision, threading.Thread):
                     if tmp[0] == 'UPDATE_COMPLETE':
                         break
                     else:
-                        time.sleep(10)
+                        time.sleep(myparameters.STACK_CREATION_UPDATE)
                 # Set updated back to False
                 self.so_e.updated = False
                 # Update the information about CCNx routers
@@ -254,7 +246,7 @@ class SOD(service_orchestrator.Decision, threading.Thread):
 
     def monitoring(self):
         Tzbx_start=time.time()
-        metrics = self.monitor.get(INFLUXDB_ZABBIX)
+        metrics = self.monitor.get(myparameters.ZABBIX_INFLUXDB)
         cpu_util = metrics[0]
         cpu_loads = metrics[1]
         mem_total = metrics[2]
@@ -262,83 +254,94 @@ class SOD(service_orchestrator.Decision, threading.Thread):
         
         self.hosts_cpu_load[0].append(cpu_loads)
         self.hosts_cpu_util[0].append(100-cpu_util)
-        self.hosts_mem_total[0].append(mem_total)
-        self.hosts_mem_aval[0].append(mem_available)
+        mem_percent = mem_available/mem_total
+        self.hosts_memory[0].append(mem_percent)
         print "zbx - cpu_load: ", self.hosts_cpu_load
         print "zbx - cpu_util: ", self.hosts_cpu_util
-        print "zbx - mem: ", self.hosts_mem_total
-        print "zbx - aval: ", self.hosts_mem_aval
+        print "zbx - memory: ", self.hosts_memory
 
         Tzbx=time.time()-Tzbx_start
         print "Zbx time to read: ", Tzbx, "s"
 
-        if len(self.hosts_cpu_load[0]) > 0:
+        if len(self.hosts_cpu_load[0]) >= myparameters.ZABBIX_MIN_READING:
             Tgm_start=time.time()
 
             cpu_load_GM = getGreyModelValues(self.gateway, self.hosts_cpu_load)
             cpu_util_GM = getGreyModelValues(self.gateway, self.hosts_cpu_util)
-            #mem_GM = getGreyModelValues(self.gateway, self.hosts_mem)
+            mem_GM = getGreyModelValues(self.gateway, self.hosts_memory)
             print "next value GM - cpu_load: ", cpu_load_GM
             print "next value GM - cpu_util: ", cpu_util_GM
-            #print "next value GM - mem: ", mem_GM
+            print "next value GM - memory: ", mem_GM
 
             avg=reduce(lambda x, y: x + y, cpu_load_GM)/len(cpu_load_GM)
-            print 'acg: ', avg
-            if avg > TRIGGER_VALUE:
+            print 'avg: ', avg
+            if avg > myparameters.TRIGGER_VALUE:
                 print "Trigger activated. I'm going to move the VM state."
                 try:
-                    Tmovetot_start=time.time()
-
+                    Tcreatevm_start=time.time()
                     #MIGRATION
                     # Deploy template
                     if self.so_e.stack_id is None:
-                        self.so_e.stack_id = self.deployer.deploy(self.graph, self.token, name='rcb_' + str(random.randint(1000, 9999)))
+                        stack_name = myparameters.STACK_NAME + str(random.randint(1000, 9999))
+                        self.so_e.stack_id = self.deployer.deploy(self.graph, self.token, name=stack_name)
                     self.so_e.stack_id_old = self.so_e.stack_id
                     self.so_e.influxdb_ip_old = self.so_e.influxdb_ip
-                    print "before - self.so_e.stack_id: ", self.so_e.stack_id
-        
+                           
                     self.so_e.stack_id=None
                     #attributes = {'region_name': "RegionOne"}
                     #self.so_e.deploy(attributes)
                     self.so_e.deploy(None)
                     self.so_e.provision()
-                    print "after - self.so_e.stack_id: ", self.so_e.stack_id
+
+                    time.sleep(60)
+
                     while True:
                         tmp = self.so_e.state()
                         if tmp[0] == 'UPDATE_COMPLETE':
                             break
                         else:
-                            time.sleep(10)
+                            time.sleep(myparameters.STACK_CREATION_UPDATE)
+                    Tcreatevm=time.time()-Tcreatevm_start
+                    print "Time to create the new VMs: ", Tcreatevm, "s"
 
                     #move data -> 
-                    print "I'm moving data from old influxVM to new influxVM",  self.so_e.influxdb_ip_old, self.so_e.influxdb_ip
+                    print "I need tpo move data from old influxVM ",  self.so_e.influxdb_ip_old," to new influxVM ", self.so_e.influxdb_ip
                     if not self.so_e.influxdb_ip_old or not self.so_e.influxdb_ip:
                         print "Cannot move data. Missing IP"
                         print "old VM ip: ", self.so_e.influxdb_ip_old
                         print "new VM ip: ", self.so_e.influxdb_ip
                     else:
                         print "I'm moving data..."
-                        #ssh = paramiko.SSHClient()
-                        #ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                        #ssh.connect(self.so_e.influxdb_ip, username='ubuntu', key_filename=BUNDLE_DIR+'/key/mcn-key.pem')
-                        #command = 'bash /home/ubuntu/greyModel_noCluster/database_config.sh ' + self.so_e.influxdb_ip_old
-                        #stdin, stdout, stderr = ssh.exec_command(command)
-                        #print "Script output", stdout.readlines()
-                        #ssh.close()
+                        Tmovedata_start=time.time()
+                        ssh = paramiko.SSHClient()
+                        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                        key = BUNDLE_DIR + myparameters.MIGRATION_KEY
+                        ssh.connect(self.so_e.influxdb_ip, username=myparameters.MIGRATION_USERNAME, key_filename=key)
+                        command = 'bash ' + myparameters.MIGRATION_SCRIPT + ' ' + self.so_e.influxdb_ip_old
+                        stdin, stdout, stderr = ssh.exec_command(command)
+                        print "Script output", stdout.readlines()
+                        ssh.close()
                         print "Data moved"
-                    Tmovetot=time.time()-Tmovetot_start
-                    print "Total time to migrate the VMs: ", Tmovetot, "s"
+                        Tmovedata=time.time()-Tmovedata_start
+                        print "Total time to migrate the data from InfluxDB-VMs: ", Tmovedata, "s"
 
                     stack_current = self.so_e.stack_id
                     self.so_e.stack_id = self.so_e.stack_id_old
                     self.so_e.dispose()
                     self.so_e.stack_id = stack_current
 
+                    # clear zabbix old values
+                    del self.hosts_cpu_load[:]
+                    del self.hosts_cpu_util[:]
+                    del self.hosts_memory[:]
+                    self.hosts_cpu_load.append(MyList())
+                    self.hosts_cpu_util.append(MyList())
+                    self.hosts_memory.append(MyList()) 
                 except:
                     print "Cannot move VM. Unexpected error:", sys.exc_info()[0]
                     raise
         print "Now I sleep..."
-        time.sleep(10)
+        time.sleep(myparameters.ZABBIX_UPDATE_TIME)
 
 class ServiceOrchestrator(object):
     """
