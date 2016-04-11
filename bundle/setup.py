@@ -18,12 +18,12 @@ Setuptools script.
 
 from setuptools import setup
 
-setup(name='sample_so',
+setup(name='rcb_so',
       version='0.2',
       description='Sample SO',
-      author='Intel Performance Learning Solutions Ltd, Intel Corporation.',
-      author_email='thijs.metsch@intel.com',
-      url='http://www.intel.com',
+      author='Unibo',
+      author_email='alessandro.zanni3@unibo.it',
+      url='',
       license='Apache 2.0',
       packages=[],
 )
