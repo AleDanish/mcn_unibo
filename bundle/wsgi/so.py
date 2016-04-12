@@ -278,7 +278,7 @@ class SOD(service_orchestrator.Decision, threading.Thread):
             Tgm=time.time()-Tgm_start
             print "Grey Model time to read: ", Tgm, "s"
 
-            #if more hosts available
+            #if more hosts to monitor
             #avg=reduce(lambda x, y: x + y, cpu_load_GM)/len(cpu_load_GM)
             
             if cpu_load_GM > myparameters.TRIGGER_VALUE:
@@ -319,25 +319,30 @@ class SOD(service_orchestrator.Decision, threading.Thread):
                     else:
                         print "I'm moving data..."
                         Tmovedata=0
+                        Tconnect=0
                         while True:
                             try:
-                                Tmovedata_start=time.time()
+                                Tconnect_start=time.time()
                                 ssh = paramiko.SSHClient()
                                 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                                 key = BUNDLE_DIR + myparameters.MIGRATION_KEY
                                 ssh.connect(self.so_e.influxdb_ip, username=myparameters.MIGRATION_USERNAME, key_filename=key)
+                                Tmovedata_start=time.time()
                                 command = 'bash ' + myparameters.MIGRATION_SCRIPT + ' ' + self.so_e.influxdb_ip_old
                                 stdin, stdout, stderr = ssh.exec_command(command)
+                                Tmovedata_end=time.time()
                                 print "Script output", stdout.readlines()
                                 ssh.close()
-                                Tmovedata=time.time()-Tmovedata_start
+                                Tconnect=Tmovedata_start-Tconnect_start
+                                Tmovedata=Tmovedata_end-Tmovedata_start
                                 print "Data moved"
                                 break
                             except paramiko.ssh_exception.NoValidConnectionsError:
                                 print "VM not ready"
                                 time.sleep(2)
                                 continue
-                        print "Total time to migrate the data from InfluxDB-VMs: ", Tmovedata, "s"
+                        print "Time to connect to VM: ", Tconnect, "s"
+                        print "Time to migrate data from VMs: ", Tmovedata, "s"
 
                     stack_current = self.so_e.stack_id
                     self.so_e.stack_id = self.so_e.stack_id_old
