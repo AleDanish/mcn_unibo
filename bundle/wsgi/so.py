@@ -95,7 +95,7 @@ class SOE(service_orchestrator.Execution):
         # Deploy template
         if self.stack_id is None:
             self.stack_id = self.deployer.deploy(self.graph, self.token, \
-                name='rcb_' + str(random.randint(1000, 9999)))
+                name=myparameters.STACK_NAME + str(random.randint(1000, 9999)))
 
     def provision(self, attributes=None):
         """
@@ -103,12 +103,11 @@ class SOE(service_orchestrator.Execution):
         """
         self.resolver.provision()
         LOG.debug('RCB SO provision')
-
         LOG.debug('Executing resource provisioning logic')
         # XXX note that provisioning of external services must happen before resource provisioning
         # Get endpoint of MaaS
 #        if attributes:
-            #print attributes
+#            print attributes
 #            if 'mcn.endpoint.maas' in attributes:
 #                self.sm_parameters['maas_ip_address'] = attributes['mcn.endpoint.maas']
 #                LOG.debug('Provision mcn.endpoint.maas in attributes'+ str(attributes['mcn.endpoint.maas']))
@@ -206,21 +205,24 @@ class SOD(service_orchestrator.Decision, threading.Thread):
         self.hosts_cpu_load = []
         self.hosts_cpu_util = []
         self.hosts_memory = []
+       
+        Tmaas_start=time.time()
         self.monitor = RCBaaSMonitor(myparameters.MAAS_DEFAULT_IP)
+        Tmaas=time.time()-Tmaas_start
+        Tgreymodel_start=time.time()
         return_code = subprocess.call("bash " + BUNDLE_DIR + "wsgi/greymodel.sh", shell=True)      
         self.gateway = JavaGateway()
+        Tgreymodel=time.time()-Tgreymodel_start
+        print "Tmaas to setup: ", Tmaas, "s"
+        print "Tgreymodel to setup: ", Tgreymodel, "s"
 
     def run(self):
         """
         Decision part implementation goes here.
         """
-        Tstart=time.time()
         self.hosts_cpu_load.append(MyList())
         self.hosts_cpu_util.append(MyList())
         self.hosts_memory.append(MyList())
-
-        Tconfig=time.time()-Tstart
-        print "Config time: ", Tconfig, "s"
         while True:
             LOG.debug('Waiting for deploy and provisioning to finish')
             self.event.wait()
@@ -256,11 +258,11 @@ class SOD(service_orchestrator.Decision, threading.Thread):
         self.hosts_cpu_util[0].append(100-cpu_util)
         mem_percent = mem_available/mem_total
         self.hosts_memory[0].append(mem_percent)
+        
+        Tzbx=time.time()-Tzbx_start
         print "zbx - cpu_load: ", self.hosts_cpu_load
         print "zbx - cpu_util: ", self.hosts_cpu_util
         print "zbx - memory: ", self.hosts_memory
-
-        Tzbx=time.time()-Tzbx_start
         print "Zbx time to read: ", Tzbx, "s"
 
         if len(self.hosts_cpu_load[0]) >= myparameters.ZABBIX_MIN_READING:
@@ -273,9 +275,13 @@ class SOD(service_orchestrator.Decision, threading.Thread):
             print "next value GM - cpu_util: ", cpu_util_GM
             print "next value GM - memory: ", mem_GM
 
-            avg=reduce(lambda x, y: x + y, cpu_load_GM)/len(cpu_load_GM)
-            print 'avg: ', avg
-            if avg > myparameters.TRIGGER_VALUE:
+            Tgm=time.time()-Tgm_start
+            print "Grey Model time to read: ", Tgm, "s"
+
+            #if more hosts available
+            #avg=reduce(lambda x, y: x + y, cpu_load_GM)/len(cpu_load_GM)
+            
+            if cpu_load_GM > myparameters.TRIGGER_VALUE:
                 print "Trigger activated. I'm going to move the VM state."
                 try:
                     Tcreatevm_start=time.time()
@@ -290,10 +296,10 @@ class SOD(service_orchestrator.Decision, threading.Thread):
                     self.so_e.stack_id=None
                     #attributes = {'region_name': "RegionOne"}
                     #self.so_e.deploy(attributes)
+
+                    Tcreatestack_start=time.time()
                     self.so_e.deploy(None)
                     self.so_e.provision()
-
-                    time.sleep(60)
 
                     while True:
                         tmp = self.so_e.state()
@@ -301,34 +307,47 @@ class SOD(service_orchestrator.Decision, threading.Thread):
                             break
                         else:
                             time.sleep(myparameters.STACK_CREATION_UPDATE)
-                    Tcreatevm=time.time()-Tcreatevm_start
-                    print "Time to create the new VMs: ", Tcreatevm, "s"
+                    Tcreatestack=time.time()-Tcreatestack_start
+                    print "Time to create the new stack (deploy+provision): ", Tcreatestack, "s"
 
                     #move data -> 
-                    print "I need tpo move data from old influxVM ",  self.so_e.influxdb_ip_old," to new influxVM ", self.so_e.influxdb_ip
-                    if not self.so_e.influxdb_ip_old or not self.so_e.influxdb_ip:
+                    print "I need to move data from old influxVM ",  self.so_e.influxdb_ip_old," to new influxVM ", self.so_e.influxdb_ip
+                    if (not self.so_e.influxdb_ip_old or not self.so_e.influxdb_ip) and (self.so_e.influxdb_ip_old != self.so_e.influxdb_ip):
                         print "Cannot move data. Missing IP"
                         print "old VM ip: ", self.so_e.influxdb_ip_old
                         print "new VM ip: ", self.so_e.influxdb_ip
                     else:
                         print "I'm moving data..."
-                        Tmovedata_start=time.time()
-                        ssh = paramiko.SSHClient()
-                        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                        key = BUNDLE_DIR + myparameters.MIGRATION_KEY
-                        ssh.connect(self.so_e.influxdb_ip, username=myparameters.MIGRATION_USERNAME, key_filename=key)
-                        command = 'bash ' + myparameters.MIGRATION_SCRIPT + ' ' + self.so_e.influxdb_ip_old
-                        stdin, stdout, stderr = ssh.exec_command(command)
-                        print "Script output", stdout.readlines()
-                        ssh.close()
-                        print "Data moved"
-                        Tmovedata=time.time()-Tmovedata_start
+                        Tmovedata=0
+                        while True:
+                            try:
+                                Tmovedata_start=time.time()
+                                ssh = paramiko.SSHClient()
+                                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                                key = BUNDLE_DIR + myparameters.MIGRATION_KEY
+                                ssh.connect(self.so_e.influxdb_ip, username=myparameters.MIGRATION_USERNAME, key_filename=key)
+                                command = 'bash ' + myparameters.MIGRATION_SCRIPT + ' ' + self.so_e.influxdb_ip_old
+                                stdin, stdout, stderr = ssh.exec_command(command)
+                                print "Script output", stdout.readlines()
+                                ssh.close()
+                                Tmovedata=time.time()-Tmovedata_start
+                                print "Data moved"
+                                break
+                            except paramiko.ssh_exception.NoValidConnectionsError:
+                                print "VM not ready"
+                                time.sleep(2)
+                                continue
                         print "Total time to migrate the data from InfluxDB-VMs: ", Tmovedata, "s"
 
                     stack_current = self.so_e.stack_id
                     self.so_e.stack_id = self.so_e.stack_id_old
+
+                    Tdeletestack_start=time.time()
                     self.so_e.dispose()
                     self.so_e.stack_id = stack_current
+
+                    Tdeletestack=time.time()-Tdeletestack_start
+                    print "Time to delete the stack: ", Tdeletestack, "s"
 
                     # clear zabbix old values
                     del self.hosts_cpu_load[:]
