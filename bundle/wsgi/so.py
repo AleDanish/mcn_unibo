@@ -330,9 +330,9 @@ class SOD(service_orchestrator.Decision, threading.Thread):
                                 Tmovedata_start=time.time()
                                 command = 'bash ' + myparameters.MIGRATION_SCRIPT + ' ' + self.so_e.influxdb_ip_old
                                 stdin, stdout, stderr = ssh.exec_command(command)
-                                Tmovedata_end=time.time()
                                 print "Script output", stdout.readlines()
                                 ssh.close()
+                                Tmovedata_end=time.time()
                                 Tconnect=Tmovedata_start-Tconnect_start
                                 Tmovedata=Tmovedata_end-Tmovedata_start
                                 print "Data moved"
