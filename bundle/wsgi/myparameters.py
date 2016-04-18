@@ -13,5 +13,6 @@ TRIGGER_VALUE = 0.1
 
 # Migration Parameters
 MIGRATION_USERNAME = 'ubuntu'
-MIGRATION_SCRIPT = '/home/ubuntu/database_migration/database_migration.sh'
+MIGRATION_SCRIPT_FOLDER = '/home/ubuntu/database_migration'
+MIGRATION_SCRIPT_NAME = 'database_migration.sh'
 MIGRATION_KEY = 'key/mcn-key.pem'
